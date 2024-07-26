@@ -72,11 +72,9 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
 
         /// returns the least upper bound from the current keyset of key
         fn lub(self: Self, key: K) usize {
-            var i: usize = 0;
-            while(i < self.len) : (i += 1) {
+            for(0..self.len) |i| {
                 if(self.keys[i] >= key) return i;
             }
-
             return self.len;
         }
 
@@ -96,6 +94,13 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
                 @memcpy(right.vals[0..right.len], self.vals[split_point..self.vals.len]);
 
                 self.len = split_point;
+                if(key >= right.keys[0]) {
+                    const key_child = try right.insert(key, val);
+                    std.debug.assert(key_child == null);
+                } else {
+                    const key_child = try self.insert(key, val);
+                    std.debug.assert(key_child == null);
+                }
 
                 return right;
             }
@@ -164,8 +169,7 @@ fn BTreeNode(comptime K: type, comptime V: type) type {
         }
         /// returns the least upper bound from the current keyset of key
         fn lub(self: Self, key: K) usize {
-            var i: usize = 0;
-            while(i < self.len) : (i += 1) {
+            for(0..self.len) |i| {
                 if(self.keys[i] >= key) return i;
             }
 
@@ -296,6 +300,27 @@ fn BTree(comptime K: type, comptime V: type) type {
             self.root = new_root;
         }
 
+        fn get(self: Self, key: K) ?V {
+            if(self.root == null) {
+                return null;
+            }
+
+            var cur: NextType = self.root.?.to_next();
+            while(true) {
+                switch(cur) {
+                    NextType.Node => |node| {
+                        const lub = node.lub(key + 1);
+                        cur = node.nexts[lub];
+                    },
+                    NextType.Leaf => |leaf| {
+                        const lub = leaf.lub(key);
+                        if(leaf.keys[lub] == key) return leaf.vals[lub];
+                        return null;
+                    },
+                }
+            }
+        }
+
 
         fn init(allocator: Allocator) Self {
             return BTree(K, V){ .root = null, .allocator = allocator };
@@ -331,11 +356,45 @@ test "btree works" {
 }
 
 test "splitting works" {
-    var tree = BTree(usize, usize).init(std.heap.page_allocator);
+    var tree = BTree(usize, usize).init(std.testing.allocator);
     for(0..128) |i| {
         try tree.insert(i, i);
     }
 
     tree.debug_print();
+    tree.deinit();
+}
+
+test "get works" {
+    var tree = BTree(usize, usize).init(std.testing.allocator);
+    for(0..128) |i| {
+        try tree.insert(i, i);
+    }
+
+    try std.testing.expectEqual(tree.get(23).?, 23);
+    try std.testing.expectEqual(tree.get(45).?, 45);
+    try std.testing.expectEqual(tree.get(10).?, 10);
+    try std.testing.expectEqual(tree.get(127).?, 127);
+    try std.testing.expectEqual(tree.get(0).?, 0);
+
+    tree.deinit();
+}
+
+test "works with random insertions" {
+    print("------------------------------------------\n", .{});
+    var prng = std.rand.DefaultPrng.init(blk: {
+        var seed: u64 = undefined;
+        try std.posix.getrandom(std.mem.asBytes(&seed));
+        break :blk seed;
+    });
+    const rand = prng.random();
+
+    var tree = BTree(usize, usize).init(std.testing.allocator);
+    for(0..256) |_| {
+        try tree.insert(rand.int(usize) % 1024, rand.int(usize) % 1024);
+    }
+
+    tree.debug_print();
+    print("------------------------------------------\n", .{});
     tree.deinit();
 }
