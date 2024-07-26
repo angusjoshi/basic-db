@@ -36,6 +36,13 @@ fn Next(comptime K: type, comptime V: type) type {
                 Self.Leaf => |leaf| leaf.keys[0],
             };
         }
+
+        fn deinit(self: *Self) void {
+            switch(self.*) {
+                Self.Node => |node| node.deinit(),
+                Self.Leaf => |leaf| leaf.deinit(),
+            } 
+        }
     };
 }
 fn KeyChild(comptime K: type, comptime V: type) type {
@@ -113,6 +120,11 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
             result.len = 0;
             result.allocator = allocator;
             return result;
+        }
+
+        fn deinit(self: *Self) void {
+            self.allocator.free(self.keys);
+            self.allocator.free(self.vals);
         }
 
         fn debug_print(self: Self) void {
@@ -227,6 +239,18 @@ fn BTreeNode(comptime K: type, comptime V: type) type {
             result.len = 0;
             return result;
         }
+        fn deinit(self: *Self) void {
+            for(self.nexts, 0..) |*next, i| {
+                if(i >= self.len + 1) break;
+                next.deinit();
+                switch(next.*) {
+                    NextType.Node => |node| self.allocator.destroy(node),
+                    NextType.Leaf => |node| self.allocator.destroy(node),
+                }
+            }
+            self.allocator.free(self.keys);
+            self.allocator.free(self.nexts);
+        }
 
         fn debug_print(self: Self) void {
             for(self.nexts, 0..) |child, i| {
@@ -286,8 +310,9 @@ fn BTree(comptime K: type, comptime V: type) type {
         }
 
         fn deinit(self: *Self) void {
-            self.root.deinit();
-            self.allocator.destroy(self.root);
+            if(self.root == null) return;
+            self.root.?.deinit();
+            self.allocator.destroy(self.root.?);
         }
     };
 }
@@ -302,6 +327,7 @@ test "btree works" {
     try tree.insert(5, 5);
 
     tree.debug_print();
+    tree.deinit();
 }
 
 test "splitting works" {
@@ -311,5 +337,5 @@ test "splitting works" {
     }
 
     tree.debug_print();
-    try std.testing.expect(false);
+    tree.deinit();
 }
