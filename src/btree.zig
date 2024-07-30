@@ -28,6 +28,12 @@ fn Next(comptime K: type, comptime V: type) type {
                 Self.Leaf => |leaf| leaf.debug_print(),
             }
         }
+        fn delete(self: Self, key: K) void {
+            switch(self) {
+                Self.Node => |node| node.delete(key),
+                Self.Leaf => |leaf| leaf.delete(key),
+            }
+        }
 
         /// requires keys to be non empty
         fn first_key(self: Self) K {
@@ -45,6 +51,7 @@ fn Next(comptime K: type, comptime V: type) type {
         }
     };
 }
+
 fn KeyChild(comptime K: type, comptime V: type) type {
     const NextType = Next(K, V);
     return struct {
@@ -60,7 +67,6 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
 
         len: usize,
         keys: []K,
-        // TODO this should maybe be a pointer?
         vals: []V,
         allocator: Allocator,
 
@@ -83,6 +89,13 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
         }
 
         fn insert(self: *Self, key: K, val: V) !?*Self {
+            const insert_loc = self.lub(key);
+
+            if(insert_loc < self.len and self.keys[insert_loc] == key) {
+                self.vals[insert_loc] = val;
+                return null;
+            }
+
             if(self.len == self.keys.len) {
                 const right = try BTreeLeaf(K, V).init(self.allocator);
                 const split_point: usize = self.len / 2;
@@ -105,17 +118,19 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
                 return right;
             }
 
-            const insert_loc = self.lub(key);
-
-            if(self.keys[insert_loc] == key) {
-                self.vals[insert_loc] = val;
-                return null;
-            }
-
             slice_insert(K, self.keys, insert_loc, key);
             slice_insert(V, self.vals, insert_loc, val);
             self.len += 1;
             return null;
+        }
+
+        fn delete(self: *Self, key: K) void {
+            const loc = self.lub(key);
+            if(loc < self.len and self.keys[loc] == key) {
+                slice_delete(K, self.keys, loc);
+                slice_delete(V, self.vals, loc);
+                self.len -= 1;
+            }
         }
 
         fn init(allocator: Allocator) !*Self {
@@ -146,11 +161,17 @@ fn BTreeLeaf(comptime K: type, comptime V: type) type {
 
 /// shifts everything to the right, drops end of slice.
 fn slice_insert(comptime T: type, s: []T, pos: usize, val: T) void {
-    // memcpy requires non overlapping :(
-    for(pos+1..s.len) |i| {
+    var i = s.len - 1;
+    while(i > pos) : (i -= 1) {
         s[i] = s[i - 1];
     }
     s[pos] = val;
+}
+
+fn slice_delete(comptime T: type, s: []T, pos: usize) void {
+    for(pos..s.len - 1) |i| {
+        s[i] = s[i + 1];
+    }
 }
 
 fn BTreeNode(comptime K: type, comptime V: type) type {
@@ -205,6 +226,17 @@ fn BTreeNode(comptime K: type, comptime V: type) type {
             return null;
         }
 
+        fn delete(self: *Self, key: K) void {
+            // TODO implement merging when deleting
+            // in the no rebalance case this goes roughly as follows,
+            // if the sizes of nexts[loc] and either of its two neighbours
+            // sums to less than NODE_SIZE, merge the two neighbours by copying
+            // the contents of the right child into the left, deleting the right, and
+            // demoting the concerning key from this if the child is a Node (i.e. not leaf)
+            const loc = self.lub(key + 1);
+            self.nexts[loc].delete(key);
+        } 
+
         fn insert(self: *Self, key: K, val: V) !?*Self {
             if(self.len == 0) {
                 self.keys[0] = key;
@@ -215,7 +247,7 @@ fn BTreeNode(comptime K: type, comptime V: type) type {
                 return null;
             }
 
-            const loc = self.lub(key);
+            const loc = self.lub(key + 1);
             const cur = self.nexts[loc];
             return switch(cur) {
                 NextType.Node => |node| blkone: {
@@ -234,6 +266,7 @@ fn BTreeNode(comptime K: type, comptime V: type) type {
                 },
             };
         }
+
 
         fn init(allocator: Allocator) !*Self {
             const result = try allocator.create(BTreeNode(K, V));
@@ -276,25 +309,30 @@ fn BTree(comptime K: type, comptime V: type) type {
         // only affects things when the tree is small so maybe not important
         root: ?*BTreeNode(K, V),
         allocator: Allocator,
+        insert_count: usize,
 
+
+        fn delete(self: *Self, key: K) void {
+            if(self.root) |root| {
+                root.delete(key);
+            }
+        }
 
         fn insert(self: *Self, key: K, val: V) !void {
-            if(self.root == null) {
+            self.insert_count += 1;
+            if(self.root) |_| {} else {
                 self.root = try BTreeNode(K, V).init(self.allocator);
             }
 
-            const right_child = try self.root.?.insert(key, val);
-            if(right_child == null) return;
+            const right_child = try self.root.?.insert(key, val) orelse return;
+            const right_first_key = right_child.keys[0];
 
-            const right_first_key = right_child.?.keys[0];
-
-            // TODO other allocators?
             const new_root = try BTreeNode(K, V).init(self.allocator);
             const old_root = self.root.?;
 
             new_root.keys[0] = right_first_key;
             new_root.nexts[0] = old_root.to_next();
-            new_root.nexts[1] = right_child.?.to_next();
+            new_root.nexts[1] = right_child.to_next();
             new_root.len = 1;
 
             self.root = new_root;
@@ -309,6 +347,7 @@ fn BTree(comptime K: type, comptime V: type) type {
             while(true) {
                 switch(cur) {
                     NextType.Node => |node| {
+                        // use key+1 here to ensure we go right in the equality case
                         const lub = node.lub(key + 1);
                         cur = node.nexts[lub];
                     },
@@ -323,7 +362,7 @@ fn BTree(comptime K: type, comptime V: type) type {
 
 
         fn init(allocator: Allocator) Self {
-            return BTree(K, V){ .root = null, .allocator = allocator };
+            return BTree(K, V){ .root = null, .allocator = allocator, .insert_count = 0, };
         }
 
         fn debug_print(self: Self) void {
@@ -370,6 +409,7 @@ test "get works" {
     for(0..128) |i| {
         try tree.insert(i, i);
     }
+    tree.debug_print();
 
     try std.testing.expectEqual(tree.get(23).?, 23);
     try std.testing.expectEqual(tree.get(45).?, 45);
@@ -396,5 +436,22 @@ test "works with random insertions" {
 
     tree.debug_print();
     print("------------------------------------------\n", .{});
+    tree.deinit();
+}
+
+test "delete works without merging" {
+    var tree = BTree(usize, usize).init(std.testing.allocator);
+    try tree.insert(2, 1);
+    try tree.insert(6, 5);
+    try tree.insert(5, 2);
+    try tree.insert(4, 2);
+    try tree.insert(2, 5);
+
+    try std.testing.expect(tree.get(4).? == 2);
+    tree.delete(4);
+    try std.testing.expect(tree.get(4) == null);
+
+    tree.debug_print();
+
     tree.deinit();
 }
