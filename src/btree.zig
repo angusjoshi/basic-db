@@ -17,8 +17,8 @@ fn Next(comptime K: type, comptime V: type) type {
 
         fn insert(self: *Self, key: K, val: V) void {
             switch(self.*) {
-                @This().Node => |node| node.insert(key, val),
-                @This().Leaf => |leaf| leaf.insert(key, val),
+                Self.Node => |node| node.insert(key, val),
+                Self.Leaf => |leaf| leaf.insert(key, val),
             }
         }
 
