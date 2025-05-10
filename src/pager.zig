@@ -1,79 +1,140 @@
 const std = @import("std");
-const io = std.io;
 const Allocator = std.mem.Allocator;
 // page 0 is the header page
 // digits until \0 is the number of pages
 
+// want i want for a v0 is
+//
 const PAGE_SIZE = 4096;
+const GOD_MODE: std.posix.mode_t = 0o666;
 
-const Pager = struct {
-    const Self = @This();
-
-    allocator: Allocator,
-    file_path: []const u8,
-
-    fn get_page(self: Self, offset: usize) ![]u8 {
-        const file = try std.fs.cwd().openFile(self.file_path, .{});
-        defer file.close();
-
-        const buf = try self.allocator.alloc(u8, PAGE_SIZE);
-
-        try file.seekTo(offset * PAGE_SIZE);
-        _ = try file.read(buf);
-
-        return buf;
-    }
-    fn write_page(self: Self, offset: usize, bytes: []const u8) !void {
-        const file = try std.fs.cwd().openFile(self.file_path, .{.mode = .write_only});
-        defer file.close();
-        
-        try file.seekTo(offset * PAGE_SIZE);
-        _ = try file.write(bytes);
-    }
-
-    fn init_old_file(file_path: []const u8, allocator: Allocator) !Self {
-        const file = try std.fs.cwd().createFile(file_path, .{});
-        file.close();
-        return Self {
-            .file_path = file_path,
-            .allocator = allocator,
+fn Pager(nPages: u16) type {
+    return struct {
+        const Node = struct {
+            pageNumber: u32,
+            offset: u32,
         };
-    }
-    fn init_new_file(file_path: []const u8, allocator: Allocator) !Self {
-        const file = try std.fs.cwd().createFile(file_path, .{.exclusive = true}); 
-        const header = allocator.alloc(u8, PAGE_SIZE);
-        _ = header;
-        _ = file;
-    }
-};
+
+        const Self = @This();
+
+        head: u16 = 0,
+        tail: u16 = 0,
+        cachedPages: [nPages]Node = undefined,
+        backingBuf: []u8,
+        fd: std.posix.fd_t,
+
+        pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
+            if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                return self.backingBuf[offset..(offset + PAGE_SIZE)];
+            }
+
+            return self.loadIntoCache(pageNumber);
+        }
+
+        pub fn flushPage(self: *Self, pageNumber: u32) !void {
+            if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                _ = try std.posix.write(self.fd, self.backingBuf[offset..(offset + PAGE_SIZE)]);
+            }
+        }
+
+        fn loadIntoCache(self: *Self, pageNumber: u32) ![]u8 {
+            if ((self.head + 1) % nPages == self.tail) {
+                @panic("ran out of cache. TODO eviction");
+            }
+
+            try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
+            const resultBuf = self.backingBuf[(self.head * PAGE_SIZE)..((self.head + 1) * PAGE_SIZE)];
+            self.head = (self.head + 1) % nPages;
+            _ = try std.posix.read(self.fd, resultBuf);
+
+            return resultBuf;
+        }
+
+        fn findPageOffsetInCache(self: *Self, pageNumber: u32) ?u32 {
+            if (self.tail < self.head) {
+                // can scan from left to right
+                for (self.tail..self.head) |i| {
+                    if (self.cachedPages[i].pageNumber == pageNumber) {
+                        return self.cachedPages[i].offset;
+                    }
+                }
+            }
+
+            if (self.tail > self.head) {
+                // need to scan from 0 to head and tail to nPages
+                for (0..self.head) |i| {
+                    if (self.cachedPages[i].pageNumber == pageNumber) {
+                        return self.cachedPages[i].offset;
+                    }
+                }
+                for (self.tail..nPages) |i| {
+                    if (self.cachedPages[i].pageNumber == pageNumber) {
+                        return self.cachedPages[i].offset;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        pub fn init(filePath: []const u8, backingBuf: []u8) !Self {
+            std.debug.assert(backingBuf.len % PAGE_SIZE == 0);
+
+            const fd = try std.posix.open(filePath, .{ .ACCMODE = .RDWR, .CREAT = true }, GOD_MODE);
+
+            return Self{ .fd = fd, .backingBuf = backingBuf };
+        }
+
+        fn deinit(self: *Self) void {
+            std.posix.close(self.fd);
+        }
+    };
+}
+
+test "refs" {
+    std.testing.refAllDeclsRecursive(Pager(42));
+}
 
 test "files work" {
-    const file = try std.fs.cwd().createFile("hehe", .{});
-    _ = try file.write("Hello, World!");
-    // file.read();
-    // file.close();
+    const fd = try std.posix.open("test-out/hehe", .{ .ACCMODE = .WRONLY, .CREAT = true }, GOD_MODE);
+    const written = try std.posix.write(fd, "Hello, World!");
+    std.posix.close(fd);
+
+    var buf: [20]u8 = undefined;
+
+    const fd2 = try std.posix.open("test-out/hehe", .{ .ACCMODE = .RDONLY, .CREAT = true }, GOD_MODE);
+    const read = try std.posix.read(fd2, &buf);
+    std.posix.close(fd2);
+
+    std.debug.print("written is: {}, read is: {}, buf is: {s}\n", .{ written, read, buf[0..read] });
 }
 
-fn test_pager() !Pager {
-    const file_name: []const u8 = "wow.db";
-    const pager = try Pager.init(file_name, std.testing.allocator);
-    return pager;
+test "pager init" {
+    var backing_buf: [2 * PAGE_SIZE]u8 = undefined;
+
+    var pager = try Pager(42).init("test-out/some_name", &backing_buf);
+
+    pager.deinit();
 }
 
-test "pager works" {
-    const pager = try test_pager();
-    const page = try pager.get_page(0);
+test "pager basic page" {
+    const backing_buf = try std.testing.allocator.alloc(u8, PAGE_SIZE * 10);
+    defer std.testing.allocator.free(backing_buf);
 
-    std.testing.allocator.free(page);
-}
+    var pager = try Pager(10).init("test-out/test2", backing_buf);
+    defer pager.deinit();
 
-test "pager read and write" {
-    const pager = try test_pager();
-    const bytes = std.testing.allocator.alloc([]u8, PAGE_SIZE);
-    // const bytes = "hehe xd";
-    const other_bytes = "nooooooooooooooooooooooo";
-    try pager.write_page(0, other_bytes);
-    try pager.write_page(2, bytes);
-    const result = try pager.get_page(2);
-    std.debug.print("{s}", .{result});
+    var pageZero = try pager.getPage(0);
+    var pageOne = try pager.getPage(1);
+    var pageFive = try pager.getPage(5);
+
+    for (0..pageZero.len) |i| {
+        pageZero[i] = @intCast(i % 256);
+        pageOne[i] = @intCast(i % 256);
+        pageFive[i] = @intCast(i % 256);
+    }
+
+    try pager.flushPage(1);
+    try pager.flushPage(5);
+    try pager.flushPage(0);
 }
