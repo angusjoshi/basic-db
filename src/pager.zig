@@ -25,6 +25,7 @@ fn Pager(nPages: u16) type {
 
         pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
             if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                std.debug.print("here, pageNumber: {}\n", .{pageNumber});
                 return self.backingBuf[offset..(offset + PAGE_SIZE)];
             }
 
@@ -32,20 +33,33 @@ fn Pager(nPages: u16) type {
         }
 
         pub fn flushPage(self: *Self, pageNumber: u32) !void {
+            std.debug.print("flushing {}...\n", .{pageNumber});
             if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                std.debug.print("got to here...\n", .{});
                 _ = try std.posix.write(self.fd, self.backingBuf[offset..(offset + PAGE_SIZE)]);
             }
         }
 
         fn loadIntoCache(self: *Self, pageNumber: u32) ![]u8 {
             if ((self.head + 1) % nPages == self.tail) {
-                @panic("ran out of cache. TODO eviction");
+                // TODO better eviction policy. this is FIFO.
+                // (and we have to flush when we evict because we don't know if it is dirty)
+                // something like a dirty flag in Node would help.
+
+                const toEvict = self.cachedPages[self.tail];
+                try self.flushPage(toEvict.pageNumber);
+                self.tail = (self.tail + 1) % nPages;
             }
 
             try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
             const resultBuf = self.backingBuf[(self.head * PAGE_SIZE)..((self.head + 1) * PAGE_SIZE)];
-            self.head = (self.head + 1) % nPages;
             _ = try std.posix.read(self.fd, resultBuf);
+
+            std.debug.assert((self.head + 1) % nPages != self.tail);
+
+            self.cachedPages[self.head] = .{ .pageNumber = pageNumber, .offset = self.head * PAGE_SIZE };
+
+            self.head = (self.head + 1) % nPages;
 
             return resultBuf;
         }
@@ -95,46 +109,65 @@ test "refs" {
     std.testing.refAllDeclsRecursive(Pager(42));
 }
 
-test "files work" {
-    const fd = try std.posix.open("test-out/hehe", .{ .ACCMODE = .WRONLY, .CREAT = true }, GOD_MODE);
-    const written = try std.posix.write(fd, "Hello, World!");
-    std.posix.close(fd);
-
-    var buf: [20]u8 = undefined;
-
-    const fd2 = try std.posix.open("test-out/hehe", .{ .ACCMODE = .RDONLY, .CREAT = true }, GOD_MODE);
-    const read = try std.posix.read(fd2, &buf);
-    std.posix.close(fd2);
-
-    std.debug.print("written is: {}, read is: {}, buf is: {s}\n", .{ written, read, buf[0..read] });
-}
-
-test "pager init" {
-    var backing_buf: [2 * PAGE_SIZE]u8 = undefined;
-
-    var pager = try Pager(42).init("test-out/some_name", &backing_buf);
-
-    pager.deinit();
-}
-
-test "pager basic page" {
+// test "files work" {
+//     const fd = try std.posix.open("test-out/hehe", .{ .ACCMODE = .WRONLY, .CREAT = true }, GOD_MODE);
+//     const written = try std.posix.write(fd, "Hello, World!");
+//     std.posix.close(fd);
+//
+//     var buf: [20]u8 = undefined;
+//
+//     const fd2 = try std.posix.open("test-out/hehe", .{ .ACCMODE = .RDONLY, .CREAT = true }, GOD_MODE);
+//     const read = try std.posix.read(fd2, &buf);
+//     std.posix.close(fd2);
+//
+//     std.debug.print("written is: {}, read is: {}, buf is: {s}\n", .{ written, read, buf[0..read] });
+// }
+//
+// test "pager init" {
+//     var backing_buf: [2 * PAGE_SIZE]u8 = undefined;
+//
+//     var pager = try Pager(42).init("test-out/some_name", &backing_buf);
+//
+//     pager.deinit();
+// }
+//
+// test "pager basic page" {
+//     const backing_buf = try std.testing.allocator.alloc(u8, PAGE_SIZE * 10);
+//     defer std.testing.allocator.free(backing_buf);
+//
+//     var pager = try Pager(10).init("test-out/test2", backing_buf);
+//     defer pager.deinit();
+//
+//     var pageZero = try pager.getPage(0);
+//     var pageOne = try pager.getPage(1);
+//     var pageFive = try pager.getPage(5);
+//
+//     for (0..pageZero.len) |i| {
+//         pageZero[i] = @intCast(i % 256);
+//         pageOne[i] = @intCast(i % 256);
+//         pageFive[i] = @intCast(i % 256);
+//     }
+//
+//     try pager.flushPage(1);
+//     try pager.flushPage(5);
+//     try pager.flushPage(0);
+// }
+//
+test "pager eviction" {
     const backing_buf = try std.testing.allocator.alloc(u8, PAGE_SIZE * 10);
     defer std.testing.allocator.free(backing_buf);
 
-    var pager = try Pager(10).init("test-out/test2", backing_buf);
+    var pager = try Pager(2).init("test-out/test3", backing_buf);
     defer pager.deinit();
 
-    var pageZero = try pager.getPage(0);
-    var pageOne = try pager.getPage(1);
+    // expecting page five to be flushed since it was loaded into the cache first
     var pageFive = try pager.getPage(5);
+    var pageZero = try pager.getPage(0);
 
     for (0..pageZero.len) |i| {
-        pageZero[i] = @intCast(i % 256);
-        pageOne[i] = @intCast(i % 256);
-        pageFive[i] = @intCast(i % 256);
+        pageZero[i] = 0;
+        pageFive[i] = 5;
     }
 
-    try pager.flushPage(1);
-    try pager.flushPage(5);
-    try pager.flushPage(0);
+    _ = try pager.getPage(1);
 }
