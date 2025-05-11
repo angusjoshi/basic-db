@@ -13,12 +13,15 @@ fn Pager(nPages: u16) type {
         const Node = struct {
             pageNumber: u32,
             offset: u32,
+            // use this to
+            next: ?u8,
+            dirty: bool,
         };
 
         const Self = @This();
 
-        head: u16 = 0,
-        tail: u16 = 0,
+        nCurrentlyCached: u16,
+        cachedPagesHead: ?Node,
         cachedPages: [nPages]Node = undefined,
         backingBuf: []u8,
         fd: std.posix.fd_t,
@@ -157,7 +160,7 @@ test "pager eviction" {
     const backing_buf = try std.testing.allocator.alloc(u8, PAGE_SIZE * 10);
     defer std.testing.allocator.free(backing_buf);
 
-    var pager = try Pager(2).init("test-out/test3", backing_buf);
+    var pager = try Pager(3).init("test-out/test3", backing_buf);
     defer pager.deinit();
 
     // expecting page five to be flushed since it was loaded into the cache first
