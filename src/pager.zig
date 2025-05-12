@@ -18,7 +18,7 @@ const assert = std.debug.assert;
 //      - the buffer returned by getPage can have the backing page evicted,
 //      - pages are always flushed on eviction,
 //
-//  an inteface like
+//  an interface like
 //      readPage(pageNumber, offset)
 //      modifyPage(pageNumber, offset, newValue)
 //      pinPage(pageNumber)
@@ -116,6 +116,7 @@ fn Pager(comptime nPages: u8) type {
 
             return true;
         }
+
         fn findWithTouch(self: *Self, pageNumber: u32) ?u8 {
             if (self.findIdx(pageNumber)) |idx| {
                 assert(self.isWellFormed());
