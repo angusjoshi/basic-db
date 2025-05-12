@@ -170,7 +170,6 @@ fn Pager(comptime nPages: u8) type {
         }
 
         pub fn flushPage(self: *Self, pageNumber: u32) !void {
-            std.debug.print("flushing {}...\n", .{pageNumber});
             if (self.findWithoutTouch(pageNumber)) |idx| {
                 try self.flushPageIdx(idx, pageNumber);
             }
