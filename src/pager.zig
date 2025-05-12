@@ -1,49 +1,47 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-// page 0 is the header page
-// digits until \0 is the number of pages
 
-// want i want for a v0 is
-//
 const PAGE_SIZE = 4096;
 const GOD_MODE: std.posix.mode_t = 0o666;
 
 const assert = std.debug.assert;
 
+// a statically allocated LRU cache with linear scans of a small buffer for finds
+// pages are automatically flushed when evicted
+// TODO store a dirty flag and flush on evict only if dirty
+// i think my interface is bad tbh. i want to,
+//      - allow callers to decide when to flush
+//      - make the returned buffer from getPage somewhat safe (at the moment it's pretty broken if the page is evicted)
+//      - flush on eviction only if the page is dirty (not sure what dirty means here yet. caller marks it as dirty?)
+//      - the option to pin a page is a nice to have
 fn Pager(comptime nPages: u8) type {
     return struct {
         const Self = @This();
         const PageNumber = u32;
 
         const Node = struct {
-            // i think we're paying 32 bits for the bool at the end which sucks. can maybe get this down.
             next: ?u8,
             prev: ?u8,
-            dirty: bool,
         };
 
-        // a linked list (statically allocated) with LRU eviction
-        // TODO this could be a hashtable. can do linear scans over just the backing array though which
-        // is potentially even faster than a hashtable lookup when relatively small.
-        // might need to handle the 'unitialized' case for nodes in the array for that though.
+        // TODO these probably shouldn't have default values
+        // and should be initialized in an init fn
         size: u8 = 0,
         head: u8 = undefined,
         tail: u8 = undefined,
+        // store the page numbers out of band with the nodes for faster linear scans
         nodes: [nPages]Node = undefined,
         pages: [nPages]PageNumber = undefined,
 
         backingBuf: []u8,
         fd: std.posix.fd_t,
 
-        // returns the index in the cache
+        // returns the index in the cache and if a page was evicted, its page number.
         fn insert(self: *Self, pageNumber: u32) struct { u8, ?u32 } {
-            // TODO handle same pageNumber being inserted twice?
-            // could just assumed that caller is smart (i.e. will call find first)
             if (self.size == 0) {
                 self.nodes[0] = .{
                     .next = null,
                     .prev = null,
-                    .dirty = false,
                 };
                 self.pages[0] = pageNumber;
 
@@ -60,7 +58,6 @@ fn Pager(comptime nPages: u8) type {
                 self.nodes[self.size] = .{
                     .prev = self.size - 1,
                     .next = null,
-                    .dirty = false,
                 };
                 self.pages[self.size] = pageNumber;
 
@@ -77,11 +74,6 @@ fn Pager(comptime nPages: u8) type {
             assert(self.nodes[self.head].prev == null);
             const pageBeingEvicted = self.pages[self.head];
             self.pages[self.head] = pageNumber;
-            // it's probably a problem here that dirty heads need to be flushed.
-            // might make sense to just inline this whole queue data structure into the Pager defn.
-            // there is maybe an alterntive where the cache list does not hold the dirty flag,
-            // and it is all handled by the caller. i don't think that works though because of eviction.
-            self.nodes[self.head].dirty = false;
 
             return .{ self.head, pageBeingEvicted };
         }
@@ -297,9 +289,9 @@ test "pager basic page" {
     var pageFive = try pager.getPage(5);
 
     for (0..pageZero.len) |i| {
-        pageZero[i] = 0;
-        pageOne[i] = 1;
-        pageFive[i] = 5;
+        pageZero[i] = @intCast((i + 0) % 256);
+        pageOne[i] = @intCast((i + 1) % 256);
+        pageFive[i] = @intCast((i + 5) % 256);
     }
 
     try pager.flushPage(1);
@@ -310,12 +302,35 @@ test "pager basic page" {
 
     var buf: [PAGE_SIZE]u8 = undefined;
     const fd2 = try std.posix.open("test-out/test2", .{ .ACCMODE = .RDONLY, .CREAT = true }, 0);
+
+    // page five
     try std.posix.lseek_SET(fd2, PAGE_SIZE * 5);
     const read = try std.posix.read(fd2, &buf);
 
     try std.testing.expectEqual(PAGE_SIZE, read);
     for (0..PAGE_SIZE) |i| {
-        try std.testing.expectEqual(5, buf[i]);
+        const expected: u8 = @intCast((i + 5) % 256);
+        try std.testing.expectEqual(expected, buf[i]);
+    }
+
+    // page one
+    try std.posix.lseek_SET(fd2, PAGE_SIZE * 1);
+    const alsoRead = try std.posix.read(fd2, &buf);
+
+    try std.testing.expectEqual(PAGE_SIZE, alsoRead);
+    for (0..PAGE_SIZE) |i| {
+        const expected: u8 = @intCast((i + 1) % 256);
+        try std.testing.expectEqual(expected, buf[i]);
+    }
+
+    // page zero
+    try std.posix.lseek_SET(fd2, PAGE_SIZE * 0);
+    const alsoAlsoRead = try std.posix.read(fd2, &buf);
+
+    try std.testing.expectEqual(PAGE_SIZE, alsoAlsoRead);
+    for (0..PAGE_SIZE) |i| {
+        const expected: u8 = @intCast((i + 0) % 256);
+        try std.testing.expectEqual(expected, buf[i]);
     }
 
     std.posix.close(fd2);
