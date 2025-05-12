@@ -90,6 +90,7 @@ fn Pager(comptime nPages: u8) type {
         fn findIdx(self: *Self, pageNumber: u32) ?u8 {
             for (0..self.size) |i| {
                 if (self.pages[i] == pageNumber) {
+                    @branchHint(.unlikely);
                     return @intCast(i);
                 }
             }
