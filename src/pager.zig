@@ -156,7 +156,6 @@ fn Pager(comptime nPages: u8) type {
 
         pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
             if (self.findPageOffsetInCache(pageNumber)) |offset| {
-                std.debug.print("here, pageNumber: {}\n", .{pageNumber});
                 return self.backingBuf[offset..(offset + PAGE_SIZE)];
             }
 
@@ -182,7 +181,7 @@ fn Pager(comptime nPages: u8) type {
             }
 
             try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
-            const resultBuf = self.backingBuf[(@as(u32, self.head) * PAGE_SIZE)..(@as(u32, self.head + 1) * PAGE_SIZE)];
+            const resultBuf = self.backingBuf[(@as(u32, idx) * PAGE_SIZE)..(@as(u32, idx + 1) * PAGE_SIZE)];
             _ = try std.posix.read(self.fd, resultBuf);
 
             return resultBuf;
@@ -265,19 +264,19 @@ test "more CacheList" {
 //
 //     try std.testing.expectEqual(null, underTest.findWithoutTouch(5));
 // }
-test "files work" {
-    const fd = try std.posix.open("test-out/hehe", .{ .ACCMODE = .WRONLY, .CREAT = true }, GOD_MODE);
-    const written = try std.posix.write(fd, "Hello, World!");
-    std.posix.close(fd);
-
-    var buf: [20]u8 = undefined;
-
-    const fd2 = try std.posix.open("test-out/hehe", .{ .ACCMODE = .RDONLY, .CREAT = true }, GOD_MODE);
-    const read = try std.posix.read(fd2, &buf);
-    std.posix.close(fd2);
-
-    std.debug.print("written is: {}, read is: {}, buf is: {s}\n", .{ written, read, buf[0..read] });
-}
+// test "files work" {
+//     const fd = try std.posix.open("test-out/hehe", .{ .ACCMODE = .WRONLY, .CREAT = true }, GOD_MODE);
+//     const written = try std.posix.write(fd, "Hello, World!");
+//     std.posix.close(fd);
+//
+//     var buf: [20]u8 = undefined;
+//
+//     const fd2 = try std.posix.open("test-out/hehe", .{ .ACCMODE = .RDONLY, .CREAT = true }, GOD_MODE);
+//     const read = try std.posix.read(fd2, &buf);
+//     std.posix.close(fd2);
+//
+//     std.debug.print("written is: {}, read is: {}, buf is: {s}\n", .{ written, read, buf[0..read] });
+// }
 
 // // test "pager init" {
 // //     var backing_buf: [2 * PAGE_SIZE]u8 = undefined;
@@ -302,8 +301,6 @@ test "pager basic page" {
         pageOne[i] = 1;
         pageFive[i] = 5;
     }
-
-    std.debug.print("\npageFive is {any}\n", .{pageFive});
 
     try pager.flushPage(1);
     try pager.flushPage(5);
