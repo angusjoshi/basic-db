@@ -17,6 +17,17 @@ const assert = std.debug.assert;
 // problems at the moment are,
 //      - the buffer returned by getPage can have the backing page evicted,
 //      - pages are always flushed on eviction,
+//
+//  an inteface like
+//      readPage(pageNumber, offset)
+//      modifyPage(pageNumber, offset, newValue)
+//      pinPage(pageNumber)
+//      unpinPage(pageNumber)
+//      flushPage(pageNumber)
+//  might work. it feels kind of tedious to call modifyPage(...) for every byte  you need to modify
+//  maybe usage will inform what the best shape is.
+//
+//  it solves the dirtiness and backing page eviction problem
 fn Pager(comptime nPages: u8) type {
     return struct {
         const Self = @This();
