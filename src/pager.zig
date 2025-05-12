@@ -14,6 +14,9 @@ const assert = std.debug.assert;
 //      - make the returned buffer from getPage somewhat safe (at the moment it's pretty broken if the page is evicted)
 //      - flush on eviction only if the page is dirty (not sure what dirty means here yet. caller marks it as dirty?)
 //      - the option to pin a page is a nice to have
+// problems at the moment are,
+//      - the buffer returned by getPage can have the backing page evicted,
+//      - pages are always flushed on eviction,
 fn Pager(comptime nPages: u8) type {
     return struct {
         const Self = @This();
@@ -24,14 +27,12 @@ fn Pager(comptime nPages: u8) type {
             prev: ?u8,
         };
 
-        // TODO these probably shouldn't have default values
-        // and should be initialized in an init fn
-        size: u8 = 0,
-        head: u8 = undefined,
-        tail: u8 = undefined,
+        size: u8,
+        head: u8,
+        tail: u8,
         // store the page numbers out of band with the nodes for faster linear scans
-        nodes: [nPages]Node = undefined,
-        pages: [nPages]PageNumber = undefined,
+        nodes: [nPages]Node,
+        pages: [nPages]PageNumber,
 
         backingBuf: []u8,
         fd: std.posix.fd_t,
@@ -192,7 +193,15 @@ fn Pager(comptime nPages: u8) type {
 
             const fd = try std.posix.open(filePath, .{ .ACCMODE = .RDWR, .CREAT = true }, GOD_MODE);
 
-            return Self{ .fd = fd, .backingBuf = backingBuf };
+            return Self{
+                .size = 0,
+                .head = undefined,
+                .tail = undefined,
+                .nodes = undefined,
+                .pages = undefined,
+                .fd = fd,
+                .backingBuf = backingBuf,
+            };
         }
 
         fn deinit(self: *Self) void {
