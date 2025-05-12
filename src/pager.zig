@@ -22,6 +22,9 @@ fn Pager(comptime nPages: u8) type {
         };
 
         // a linked list (statically allocated) with LRU eviction
+        // TODO this could be a hashtable. can do linear scans over just the backing array though which
+        // is potentially even faster than a hashtable lookup when relatively small.
+        // might need to handle the 'unitialized' case for nodes in the array for that though.
         const CacheList = struct {
             size: u8 = 0,
             head: u8 = undefined,
@@ -158,85 +161,62 @@ fn Pager(comptime nPages: u8) type {
         backingBuf: []u8,
         fd: std.posix.fd_t,
 
-        // pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
-        //     if (self.findPageOffsetInCache(pageNumber)) |offset| {
-        //         std.debug.print("here, pageNumber: {}\n", .{pageNumber});
-        //         return self.backingBuf[offset..(offset + PAGE_SIZE)];
-        //     }
-        //
-        //     return self.loadIntoCache(pageNumber);
-        // }
-        //
-        // pub fn flushPage(self: *Self, pageNumber: u32) !void {
-        //     std.debug.print("flushing {}...\n", .{pageNumber});
-        //     if (self.findPageOffsetInCache(pageNumber)) |offset| {
-        //         std.debug.print("got to here...\n", .{});
-        //         _ = try std.posix.write(self.fd, self.backingBuf[offset..(offset + PAGE_SIZE)]);
-        //     }
-        // }
-        //
-        // fn loadIntoCache(self: *Self, pageNumber: u32) ![]u8 {
-        //     if ((self.head + 1) % nPages == self.tail) {
-        //         // TODO better eviction policy. this is FIFO.
-        //         // (and we have to flush when we evict because we don't know if it is dirty)
-        //         // something like a dirty flag in Node would help.
-        //
-        //         const toEvict = self.cachedPages[self.tail];
-        //         try self.flushPage(toEvict.pageNumber);
-        //         self.tail = (self.tail + 1) % nPages;
-        //     }
-        //
-        //     try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
-        //     const resultBuf = self.backingBuf[(self.head * PAGE_SIZE)..((self.head + 1) * PAGE_SIZE)];
-        //     _ = try std.posix.read(self.fd, resultBuf);
-        //
-        //     std.debug.assert((self.head + 1) % nPages != self.tail);
-        //
-        //     self.cachedPages[self.head] = .{ .pageNumber = pageNumber, .offset = self.head * PAGE_SIZE };
-        //
-        //     self.head = (self.head + 1) % nPages;
-        //
-        //     return resultBuf;
-        // }
-        //
-        // fn findPageOffsetInCache(self: *Self, pageNumber: u32) ?u32 {
-        //     if (self.tail < self.head) {
-        //         // can scan from left to right
-        //         for (self.tail..self.head) |i| {
-        //             if (self.cachedPages[i].pageNumber == pageNumber) {
-        //                 return self.cachedPages[i].offset;
-        //             }
-        //         }
-        //     }
-        //
-        //     if (self.tail > self.head) {
-        //         // need to scan from 0 to head and tail to nPages
-        //         for (0..self.head) |i| {
-        //             if (self.cachedPages[i].pageNumber == pageNumber) {
-        //                 return self.cachedPages[i].offset;
-        //             }
-        //         }
-        //         for (self.tail..nPages) |i| {
-        //             if (self.cachedPages[i].pageNumber == pageNumber) {
-        //                 return self.cachedPages[i].offset;
-        //             }
-        //         }
-        //     }
-        //
-        //     return null;
-        // }
-        //
-        // pub fn init(filePath: []const u8, backingBuf: []u8) !Self {
-        //     std.debug.assert(backingBuf.len % PAGE_SIZE == 0);
-        //
-        //     const fd = try std.posix.open(filePath, .{ .ACCMODE = .RDWR, .CREAT = true }, GOD_MODE);
-        //
-        //     return Self{ .fd = fd, .backingBuf = backingBuf };
-        // }
-        //
-        // fn deinit(self: *Self) void {
-        //     std.posix.close(self.fd);
-        // }
+        pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
+            if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                std.debug.print("here, pageNumber: {}\n", .{pageNumber});
+                return self.backingBuf[offset..(offset + PAGE_SIZE)];
+            }
+
+            return self.loadIntoCache(pageNumber);
+        }
+
+        pub fn flushPage(self: *Self, pageNumber: u32) !void {
+            std.debug.print("flushing {}...\n", .{pageNumber});
+            if (self.findPageOffsetInCache(pageNumber)) |offset| {
+                std.debug.print("got to here...\n", .{});
+                _ = try std.posix.write(self.fd, self.backingBuf[offset..(offset + PAGE_SIZE)]);
+            }
+        }
+
+        fn loadIntoCache(self: *Self, pageNumber: u32) ![]u8 {
+            if ((self.head + 1) % nPages == self.tail) {
+                // TODO better eviction policy. this is FIFO.
+                // (and we have to flush when we evict because we don't know if it is dirty)
+                // something like a dirty flag in Node would help.
+
+                const toEvict = self.cachedPages[self.tail];
+                try self.flushPage(toEvict.pageNumber);
+                self.tail = (self.tail + 1) % nPages;
+            }
+
+            try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
+            const resultBuf = self.backingBuf[(self.head * PAGE_SIZE)..((self.head + 1) * PAGE_SIZE)];
+            _ = try std.posix.read(self.fd, resultBuf);
+
+            std.debug.assert((self.head + 1) % nPages != self.tail);
+
+            self.cachedPages[self.head] = .{ .pageNumber = pageNumber, .offset = self.head * PAGE_SIZE };
+
+            self.head = (self.head + 1) % nPages;
+
+            return resultBuf;
+        }
+
+        fn findPageOffsetInCache(self: *Self, pageNumber: u32) ?u32 {
+            return self.cacheList.findWithTouch(pageNumber);
+        }
+
+        pub fn init(filePath: []const u8, backingBuf: []u8) !Self {
+            std.debug.assert(backingBuf.len % PAGE_SIZE == 0);
+
+            const fd = try std.posix.open(filePath, .{ .ACCMODE = .RDWR, .CREAT = true }, GOD_MODE);
+
+            return Self{ .fd = fd, .backingBuf = backingBuf };
+        }
+
+        fn deinit(self: *Self) void {
+            std.posix.close(self.fd);
+        }
     };
 }
 
