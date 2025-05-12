@@ -1,6 +1,3 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-
 const PAGE_SIZE = 4096;
 const GOD_MODE: std.posix.mode_t = 0o666;
 
@@ -375,3 +372,5 @@ test "pager basic page" {
 //
 //     _ = try pager.getPage(1);
 // }
+
+const std = @import("std");
