@@ -29,15 +29,16 @@ fn Pager(comptime nPages: u8) type {
     return struct {
         const Self = @This();
         const PageNumber = u32;
+        const SmallPtr = u8;
 
         const Node = struct {
-            next: ?u8,
-            prev: ?u8,
+            next: ?SmallPtr,
+            prev: ?SmallPtr,
         };
 
-        size: u8,
-        head: u8,
-        tail: u8,
+        size: SmallPtr,
+        head: SmallPtr,
+        tail: SmallPtr,
         // store the page numbers out of band with the nodes for faster linear scans
         nodes: [nPages]Node,
         pages: [nPages]PageNumber,
@@ -46,7 +47,7 @@ fn Pager(comptime nPages: u8) type {
         fd: std.posix.fd_t,
 
         // returns the index in the cache and if a page was evicted, its page number.
-        fn insert(self: *Self, pageNumber: u32) struct { u8, ?u32 } {
+        fn insert(self: *Self, pageNumber: PageNumber) struct { SmallPtr, ?PageNumber } {
             if (self.size == 0) {
                 self.nodes[0] = .{
                     .next = null,
@@ -87,7 +88,7 @@ fn Pager(comptime nPages: u8) type {
             return .{ self.head, pageBeingEvicted };
         }
 
-        fn findIdx(self: *Self, pageNumber: u32) ?u8 {
+        fn findIdx(self: *Self, pageNumber: PageNumber) ?SmallPtr {
             for (0..self.size) |i| {
                 if (self.pages[i] == pageNumber) {
                     @branchHint(.unlikely);
@@ -98,7 +99,7 @@ fn Pager(comptime nPages: u8) type {
             return null;
         }
 
-        fn findWithoutTouch(self: *Self, pageNumber: u32) ?u8 {
+        fn findWithoutTouch(self: *Self, pageNumber: PageNumber) ?SmallPtr {
             if (self.findIdx(pageNumber)) |idx| {
                 return idx;
             }
@@ -115,7 +116,7 @@ fn Pager(comptime nPages: u8) type {
             return true;
         }
 
-        fn findWithTouch(self: *Self, pageNumber: u32) ?u8 {
+        fn findWithTouch(self: *Self, pageNumber: PageNumber) ?SmallPtr {
             if (self.findIdx(pageNumber)) |idx| {
                 assert(self.isWellFormed());
                 if (idx == self.tail) {
@@ -157,7 +158,7 @@ fn Pager(comptime nPages: u8) type {
             return null;
         }
 
-        pub fn getPage(self: *Self, pageNumber: u32) ![]u8 {
+        pub fn getPage(self: *Self, pageNumber: PageNumber) ![]u8 {
             if (self.findPageOffsetInCache(pageNumber)) |offset| {
                 return self.backingBuf[offset..(offset + PAGE_SIZE)];
             }
@@ -165,32 +166,32 @@ fn Pager(comptime nPages: u8) type {
             return self.loadIntoCache(pageNumber);
         }
 
-        fn flushPageIdx(self: *Self, idx: u8, pageNumber: u32) !void {
-            const offset: u32 = PAGE_SIZE * @as(u32, idx);
+        fn flushPageIdx(self: *Self, idx: SmallPtr, pageNumber: PageNumber) !void {
+            const offset: PageNumber = PAGE_SIZE * @as(PageNumber, idx);
             try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
             _ = try std.posix.write(self.fd, self.backingBuf[offset..(offset + PAGE_SIZE)]);
         }
 
-        pub fn flushPage(self: *Self, pageNumber: u32) !void {
+        pub fn flushPage(self: *Self, pageNumber: PageNumber) !void {
             if (self.findWithoutTouch(pageNumber)) |idx| {
                 try self.flushPageIdx(idx, pageNumber);
             }
         }
 
-        fn loadIntoCache(self: *Self, pageNumber: u32) ![]u8 {
+        fn loadIntoCache(self: *Self, pageNumber: PageNumber) ![]u8 {
             const idx, const evictedPageNumber = self.insert(pageNumber);
             if (evictedPageNumber) |page| {
                 try self.flushPageIdx(idx, page);
             }
 
             try std.posix.lseek_SET(self.fd, pageNumber * PAGE_SIZE);
-            const resultBuf = self.backingBuf[(@as(u32, idx) * PAGE_SIZE)..(@as(u32, idx + 1) * PAGE_SIZE)];
+            const resultBuf = self.backingBuf[(@as(PageNumber, idx) * PAGE_SIZE)..(@as(PageNumber, idx + 1) * PAGE_SIZE)];
             _ = try std.posix.read(self.fd, resultBuf);
 
             return resultBuf;
         }
 
-        fn findPageOffsetInCache(self: *Self, pageNumber: u32) ?u32 {
+        fn findPageOffsetInCache(self: *Self, pageNumber: PageNumber) ?u32 {
             if (self.findWithTouch(pageNumber)) |idx| {
                 return @as(u32, idx) * PAGE_SIZE;
             }
@@ -219,6 +220,7 @@ fn Pager(comptime nPages: u8) type {
         }
     };
 }
+
 test "refs" {
     std.testing.refAllDeclsRecursive(Pager(42));
 }
